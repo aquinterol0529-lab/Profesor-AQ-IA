@@ -6,31 +6,51 @@
 import { useState, useEffect } from 'react';
 import { CourseForm } from './components/CourseForm';
 import { VirtualClassroom } from './components/VirtualClassroom';
+import { Auth } from './components/Auth';
 import { generateCourse } from './services/gemini';
+import { auth, db } from './services/firebase';
+import { onAuthStateChanged, User, signOut } from 'firebase/auth';
+import { doc, setDoc, getDoc, serverTimestamp, collection, addDoc } from 'firebase/firestore';
 import { CourseData, CourseInput } from './types';
-import { GraduationCap, Loader2, Sparkles, Moon, Sun } from 'lucide-react';
+import { GraduationCap, Loader2, Sparkles, Moon, Sun, LogOut } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
   const [courseData, setCourseData] = useState<CourseData | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(false);
 
-  // Load saved course and theme from localStorage
+  // Load saved theme
   useEffect(() => {
-    const savedCourse = localStorage.getItem('profesor_aq_course');
-    if (savedCourse) {
-      try {
-        setCourseData(JSON.parse(savedCourse));
-      } catch (e) {
-        localStorage.removeItem('profesor_aq_course');
-      }
-    }
     const savedTheme = localStorage.getItem('profesor_aq_theme');
     if (savedTheme === 'dark') {
       setIsDarkMode(true);
     }
+  }, []);
+
+  // Auth listener
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setUser(u);
+      if (u) {
+        // Load user's last course from Firestore
+        try {
+          const userDoc = await getDoc(doc(db, 'users', u.uid));
+          if (userDoc.exists() && userDoc.data().lastCourse) {
+            setCourseData(userDoc.data().lastCourse);
+          }
+        } catch (e) {
+          console.error("Error loading user data", e);
+        }
+      } else {
+        setCourseData(null);
+      }
+      setIsLoading(false);
+    });
+    return () => unsub();
   }, []);
 
   const toggleDarkMode = () => {
@@ -42,31 +62,66 @@ export default function App() {
   };
 
   const handleGenerateCourse = async (input: CourseInput) => {
-    setIsLoading(true);
+    if (!user) return;
+    setIsGenerating(true);
     setError(null);
     try {
       const data = await generateCourse(input);
       setCourseData(data);
-      localStorage.setItem('profesor_aq_course', JSON.stringify(data));
+      
+      // Save to Firestore
+      await setDoc(doc(db, 'users', user.uid), {
+        lastCourse: data,
+        lastLoginAt: serverTimestamp()
+      }, { merge: true });
+
+      // Track event
+      await addDoc(collection(db, 'events'), {
+        uid: user.uid,
+        type: 'COURSE_CREATED',
+        payload: { topic: input.tema, level: input.nivel },
+        timestamp: serverTimestamp()
+      });
+
     } catch (err) {
       console.error(err);
       setError('Hubo un error al generar el curso. Por favor, intenta de nuevo.');
     } finally {
-      setIsLoading(false);
+      setIsGenerating(false);
     }
   };
 
   const handleReset = () => {
     if (window.confirm('¿Estás seguro de que quieres salir? Se perderá el progreso del curso actual.')) {
       setCourseData(null);
-      localStorage.removeItem('profesor_aq_course');
-      localStorage.removeItem('profesor_aq_progress');
+      if (user) {
+        setDoc(doc(db, 'users', user.uid), { lastCourse: null }, { merge: true });
+      }
     }
   };
 
+  const handleLogout = async () => {
+    await signOut(auth);
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950">
+        <div className="flex flex-col items-center">
+          <div className="w-12 h-12 border-4 border-purple-600 border-t-transparent rounded-full animate-spin mb-4" />
+          <p className="text-slate-500 font-bold animate-pulse">Iniciando Aula Virtual...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Auth />;
+  }
+
   return (
     <div className={`min-h-screen transition-colors duration-300 ${isDarkMode ? 'dark bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
-      <div className="fixed top-4 right-4 z-50">
+      <div className="fixed top-4 right-4 z-50 flex gap-2">
         <button
           onClick={toggleDarkMode}
           className="p-3 rounded-full bg-white dark:bg-slate-800 shadow-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:scale-110 transition-transform"
@@ -74,10 +129,17 @@ export default function App() {
         >
           {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
         </button>
+        <button
+          onClick={handleLogout}
+          className="p-3 rounded-full bg-white dark:bg-slate-800 shadow-lg border border-slate-200 dark:border-slate-700 text-red-500 hover:scale-110 transition-transform"
+          title="Cerrar sesión"
+        >
+          <LogOut size={20} />
+        </button>
       </div>
 
       <AnimatePresence mode="wait">
-        {isLoading ? (
+        {isGenerating ? (
           <motion.div
             key="loading"
             initial={{ opacity: 0 }}

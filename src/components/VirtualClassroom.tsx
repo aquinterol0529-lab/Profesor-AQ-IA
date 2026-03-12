@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { CourseData } from '../types';
+import { auth, db } from '../services/firebase';
+import { doc, setDoc, getDoc, serverTimestamp, collection, addDoc } from 'firebase/firestore';
 import { 
   BookOpen, 
   CheckCircle, 
@@ -32,23 +34,66 @@ export function VirtualClassroom({ course, onReset }: Props) {
   const [view, setView] = useState<ViewState>({ type: 'overview' });
   const [completedLessons, setCompletedLessons] = useState<Set<string>>(new Set());
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [courseId, setCourseId] = useState<string | null>(null);
 
-  // Load progress from localStorage
+  // Generate or find a unique ID for this course to track progress
   useEffect(() => {
-    const savedProgress = localStorage.getItem('profesor_aq_progress');
-    if (savedProgress) {
-      try {
-        setCompletedLessons(new Set(JSON.parse(savedProgress)));
-      } catch (e) {
-        console.error("Error loading progress", e);
+    const titleHash = course.title.split('').reduce((a, b) => { a = ((a << 5) - a) + b.charCodeAt(0); return a & a; }, 0);
+    setCourseId(`course_${Math.abs(titleHash)}`);
+  }, [course]);
+
+  // Load progress from Firestore
+  useEffect(() => {
+    const loadProgress = async () => {
+      const user = auth.currentUser;
+      if (user && courseId) {
+        try {
+          const progressDoc = await getDoc(doc(db, 'courseProgress', `${user.uid}_${courseId}`));
+          if (progressDoc.exists()) {
+            setCompletedLessons(new Set(progressDoc.data().completedLessons || []));
+          }
+        } catch (e) {
+          console.error("Error loading progress from Firestore", e);
+        }
       }
-    }
-  }, []);
+    };
+    loadProgress();
+  }, [courseId]);
 
-  // Save progress to localStorage
+  // Save progress to Firestore
   useEffect(() => {
-    localStorage.setItem('profesor_aq_progress', JSON.stringify(Array.from(completedLessons)));
-  }, [completedLessons]);
+    const saveProgress = async () => {
+      const user = auth.currentUser;
+      if (user && courseId) {
+        try {
+          const percent = totalLessons > 0 ? Math.round((completedLessons.size / totalLessons) * 100) : 0;
+          await setDoc(doc(db, 'courseProgress', `${user.uid}_${courseId}`), {
+            uid: user.uid,
+            courseId: courseId,
+            completedLessons: Array.from(completedLessons),
+            percent: percent,
+            completed: percent === 100,
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+
+          // Track progress event if completed
+          if (percent === 100) {
+            await addDoc(collection(db, 'events'), {
+              uid: user.uid,
+              type: 'COURSE_COMPLETED',
+              payload: { courseId, title: course.title },
+              timestamp: serverTimestamp()
+            });
+          }
+        } catch (e) {
+          console.error("Error saving progress to Firestore", e);
+        }
+      }
+    };
+    if (completedLessons.size > 0) {
+      saveProgress();
+    }
+  }, [completedLessons, courseId]);
 
   const totalLessons = course.units.reduce((acc, unit) => acc + unit.lessons.length, 0);
   const progressPercentage = totalLessons > 0 ? Math.round((completedLessons.size / totalLessons) * 100) : 0;

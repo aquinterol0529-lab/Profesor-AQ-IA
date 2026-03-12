@@ -5,9 +5,62 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Profesor AQ IA - Aula Virtual</title>
     <script>
-      if (typeof global === 'undefined') {
-        window.global = window;
-      }
+      (function() {
+        // Fix for "Cannot set property fetch of #<Window> which has only a getter"
+        // This error happens when libraries try to polyfill fetch on the global object.
+        const originalFetch = window.fetch;
+        
+        const proxyHandler = {
+          get(target, prop) {
+            if (prop === 'global' || prop === 'globalThis') return globalProxy;
+            const value = target[prop];
+            if (typeof value === 'function') {
+              // Native functions must be bound to window to work correctly
+              // We use a simple check for native functions
+              const isNative = value.toString().includes('[native code]') || 
+                               Object.prototype.toString.call(value) === '[object Function]';
+              if (isNative) {
+                try {
+                  return value.bind(target);
+                } catch (e) {
+                  return value;
+                }
+              }
+            }
+            return value;
+          },
+          set(target, prop, value) {
+            if (prop === 'fetch') {
+              console.warn('Blocked attempt to overwrite window.fetch');
+              return true;
+            }
+            try {
+              target[prop] = value;
+            } catch (e) {
+              // Ignore errors for read-only properties
+            }
+            return true;
+          },
+          // Ensure 'fetch' appears in the proxy even if we intercept it
+          has(target, prop) {
+            return prop in target;
+          }
+        };
+
+        const globalProxy = new Proxy(window, proxyHandler);
+        
+        // Define 'global' on window
+        try {
+          Object.defineProperty(window, 'global', {
+            value: globalProxy,
+            configurable: true,
+            enumerable: true,
+            writable: true
+          });
+        } catch (e) {
+          window.global = globalProxy;
+        }
+      })();
     </script>
   </head>
   <body>
